@@ -10,9 +10,13 @@ SK하이닉스 본주-ADR 괴리율 로컬 대시보드
 
 import time
 import threading
+import socket
 import pandas as pd
 from flask import Flask, jsonify, render_template_string
 import yfinance as yf
+
+# 네트워크 요청이 응답 없이 무한정 걸려있는 것을 방지 (초 단위)
+socket.setdefaulttimeout(15)
 
 app = Flask(__name__)
 
@@ -95,9 +99,19 @@ def history_loop():
 def fetch_and_update():
     """yfinance로 3개 티커를 가져와 괴리율을 계산하고 캐시에 저장"""
     try:
+        print(f"[fetch] 시도 시작 ({time.strftime('%H:%M:%S')})")
+
+        print("[fetch] SKHY 요청 중...")
         adr = yf.Ticker(ADR_TICKER).fast_info["last_price"]
+        print(f"[fetch] SKHY 완료: {adr}")
+
+        print("[fetch] 000660.KS 요청 중...")
         krx = yf.Ticker(KRX_TICKER).fast_info["last_price"]
+        print(f"[fetch] 000660.KS 완료: {krx}")
+
+        print("[fetch] KRW=X 요청 중...")
         fx = yf.Ticker(FX_TICKER).fast_info["last_price"]
+        print(f"[fetch] KRW=X 완료: {fx}")
 
         theo = (krx / ADR_RATIO) / fx
         premium = (adr - theo) / theo * 100
@@ -117,7 +131,7 @@ def fetch_and_update():
     except Exception as e:
         with cache_lock:
             cache["error"] = str(e)
-        print(f"[fetch error] {e}")
+        print(f"[fetch error] {type(e).__name__}: {e}")
 
 
 def background_loop():
@@ -374,18 +388,25 @@ setInterval(loadHistory, 60000); // 히스토리는 1분마다 재확인 (서버
 """
 
 
-if __name__ == "__main__":
-    # 백그라운드 갱신 스레드 시작 (실시간 시세)
+def start_background_threads():
+    """실시간 시세 + 히스토리 갱신 스레드 시작.
+    gunicorn(배포)이든 python app.py(로컬)든 모듈이 로드될 때 항상 실행됨."""
     t = threading.Thread(target=background_loop, daemon=True)
     t.start()
-
-    # 백그라운드 갱신 스레드 시작 (일별 히스토리)
     t2 = threading.Thread(target=history_loop, daemon=True)
     t2.start()
 
+
+start_background_threads()
+
+if __name__ == "__main__":
+    import os
+
+    port = int(os.environ.get("PORT", 5000))
+
     print("=" * 50)
     print("SK하이닉스 ADR 괴리율 대시보드 서버 시작")
-    print("브라우저에서 http://localhost:5000 열어주세요")
+    print(f"브라우저에서 http://localhost:{port} 열어주세요")
     print("=" * 50)
 
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)
