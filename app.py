@@ -1,22 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-SK하이닉스 본주-ADR 괴리율 로컬 대시보드
+SK하이닉스 본주-ADR 괴리율 대시보드
 실행: python app.py
 브라우저: http://localhost:5000
 
 필요 패키지:
-    pip install flask yfinance --break-system-packages
+    pip install -r requirements.txt --break-system-packages
 """
 
 import time
 import threading
-import socket
+import datetime
+import requests
 import pandas as pd
 from flask import Flask, jsonify, render_template_string
-import yfinance as yf
 
-# 네트워크 요청이 응답 없이 무한정 걸려있는 것을 방지 (초 단위)
-socket.setdefaulttimeout(15)
+YF_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+YF_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 app = Flask(__name__)
 
@@ -45,20 +45,21 @@ history_lock = threading.Lock()
 HISTORY_REFRESH_SEC = 300  # 5분마다 히스토리 갱신 (일별 데이터라 자주 안 바뀜)
 
 
-def fetch_history(period="3mo", interval="1d"):
+def fetch_history(range_="3mo"):
     """상장일부터 지금까지 일별 시세를 모아 날짜별 괴리율 계산"""
-    adr_close = yf.Ticker(ADR_TICKER).history(period=period, interval=interval, timeout=10)["Close"]
-    krx_close = yf.Ticker(KRX_TICKER).history(period=period, interval=interval, timeout=10)["Close"]
-    fx_close = yf.Ticker(FX_TICKER).history(period=period, interval=interval, timeout=10)["Close"]
+    adr_series = fetch_daily_series(ADR_TICKER, range_=range_)
+    krx_series = fetch_daily_series(KRX_TICKER, range_=range_)
+    fx_series = fetch_daily_series(FX_TICKER, range_=range_)
 
-    # 타임존 제거 + 날짜만 남기기 (한국/미국 장 시간대가 달라서 날짜 기준으로 맞춤)
-    for s in (adr_close, krx_close, fx_close):
-        s.index = s.index.tz_localize(None).normalize()
+    df = pd.DataFrame({
+        "adr": pd.Series(adr_series),
+        "krx": pd.Series(krx_series),
+        "fx": pd.Series(fx_series),
+    }).sort_index()
 
-    df = pd.DataFrame({"adr": adr_close, "krx": krx_close, "fx": fx_close}).sort_index()
     df["krx"] = df["krx"].ffill()
     df["fx"] = df["fx"].ffill()
-    df = df.dropna(subset=["adr"])  # SKHY가 실제로 거래된 날짜만 남김 (상장 전 날짜 제거)
+    df = df.dropna(subset=["adr"])  # SKHY가 실제로 거래된 날짜만 남김
 
     df["theo"] = (df["krx"] / ADR_RATIO) / df["fx"]
     df["premium"] = (df["adr"] - df["theo"]) / df["theo"] * 100
@@ -96,12 +97,39 @@ def history_loop():
         time.sleep(HISTORY_REFRESH_SEC)
 
 
-def get_last_price(ticker, timeout=10):
-    """history()는 timeout을 직접 지정할 수 있어서 fast_info보다 안전함"""
-    df = yf.Ticker(ticker).history(period="5d", interval="1d", timeout=timeout)
-    if df.empty:
-        raise RuntimeError(f"{ticker}: 데이터를 못 받음 (빈 응답)")
-    return float(df["Close"].iloc[-1])
+def fetch_chart(symbol, interval="1d", range_="1d", timeout=10):
+    """Yahoo Finance chart API를 requests로 직접 호출 (yfinance 없이)"""
+    url = YF_CHART_URL.format(symbol=symbol)
+    params = {"interval": interval, "range": range_}
+    r = requests.get(url, params=params, headers=YF_HEADERS, timeout=timeout)
+    r.raise_for_status()
+    data = r.json()
+    result = data.get("chart", {}).get("result")
+    if not result:
+        raise RuntimeError(f"{symbol}: 응답에 데이터 없음")
+    return result[0]
+
+
+def get_last_price(symbol, timeout=10):
+    result = fetch_chart(symbol, interval="1d", range_="1d", timeout=timeout)
+    price = result.get("meta", {}).get("regularMarketPrice")
+    if price is None:
+        raise RuntimeError(f"{symbol}: regularMarketPrice 없음")
+    return float(price)
+
+
+def fetch_daily_series(symbol, range_="3mo", timeout=10):
+    """symbol의 일별 종가를 {날짜: 종가} 딕셔너리로 반환"""
+    result = fetch_chart(symbol, interval="1d", range_=range_, timeout=timeout)
+    timestamps = result.get("timestamp", [])
+    closes = result["indicators"]["quote"][0]["close"]
+    series = {}
+    for ts, close in zip(timestamps, closes):
+        if close is None:
+            continue
+        date = datetime.datetime.utcfromtimestamp(ts).date()
+        series[date] = close
+    return series
 
 
 def fetch_and_update():
@@ -252,7 +280,7 @@ INDEX_HTML = """
   <div class="eyebrow">Live ADR Arbitrage Monitor · Local Server</div>
   <h1>SK하이닉스 본주 · ADR 괴리율</h1>
   <div class="desc">
-    서버가 백그라운드에서 30초마다 yfinance로 시세를 갱신하고, 이 페이지는 그 결과를 자동으로 불러옵니다.
+    서버가 백그라운드에서 30초마다 Yahoo Finance에서 시세를 가져오고, 이 페이지는 그 결과를 자동으로 불러옵니다.
   </div>
 
   <div class="status">
@@ -289,8 +317,8 @@ INDEX_HTML = """
   </div>
 
   <footer>
-    데이터 출처: yfinance (Yahoo Finance) · 서버가 30초마다 갱신, 페이지는 5초마다 서버에 확인합니다.<br>
-    이 창을 열어두는 동안 터미널에서 app.py가 계속 실행 중이어야 합니다.
+    데이터 출처: Yahoo Finance (requests로 직접 호출) · 서버가 30초마다 갱신, 페이지는 5초마다 서버에 확인합니다.<br>
+    이 사이트는 Render에서 24시간 돌아가고 있습니다.
   </footer>
 </div>
 
