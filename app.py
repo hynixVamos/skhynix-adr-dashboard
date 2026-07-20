@@ -470,10 +470,10 @@ def start_background_threads():
     t2.start()
 
 
-start_background_threads()
-
 if __name__ == "__main__":
     import os
+
+    start_background_threads()
 
     port = int(os.environ.get("PORT", 5000))
 
