@@ -134,8 +134,10 @@ def fetch_daily_series(symbol, range_="3mo", timeout=10):
 
 def fetch_and_update():
     """yfinance로 3개 티커를 가져와 괴리율을 계산하고 캐시에 저장"""
+    import os
+    pid = os.getpid()
     try:
-        print(f"[fetch] 시도 시작 ({time.strftime('%H:%M:%S')})")
+        print(f"[fetch][pid={pid}] 시도 시작 ({time.strftime('%H:%M:%S')})")
 
         print("[fetch] SKHY 요청 중...")
         adr = get_last_price(ADR_TICKER)
@@ -179,14 +181,22 @@ def background_loop():
 
 @app.route("/api/quote")
 def api_quote():
+    import os
     with cache_lock:
-        return jsonify(dict(cache))
+        payload = dict(cache)
+    payload["_pid"] = os.getpid()
+    payload["_cache_id"] = id(cache)
+    resp = jsonify(payload)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
 
 
 @app.route("/api/history")
 def api_history():
     with history_lock:
-        return jsonify(dict(history_cache))
+        resp = jsonify(dict(history_cache))
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    return resp
 
 
 @app.route("/api/debug")
