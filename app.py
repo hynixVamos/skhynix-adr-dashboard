@@ -161,6 +161,33 @@ def api_history():
         return jsonify(dict(history_cache))
 
 
+@app.route("/api/debug")
+def api_debug():
+    """Render 서버가 인터넷에 나갈 수 있는지, Yahoo만 막힌 건지 확인용"""
+    import requests
+    results = {}
+
+    # 1) 일반적인 사이트 (구글) 접속 테스트 - 인터넷 자체가 되는지
+    try:
+        r = requests.get("https://www.google.com", timeout=8)
+        results["google"] = f"OK ({r.status_code})"
+    except Exception as e:
+        results["google"] = f"FAIL: {type(e).__name__}: {e}"
+
+    # 2) Yahoo Finance 직접 접속 테스트
+    try:
+        r = requests.get(
+            "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0"}
+        )
+        results["yahoo_direct"] = f"OK ({r.status_code})"
+    except Exception as e:
+        results["yahoo_direct"] = f"FAIL: {type(e).__name__}: {e}"
+
+    return jsonify(results)
+
+
 @app.route("/")
 def index():
     return render_template_string(INDEX_HTML)
