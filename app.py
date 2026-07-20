@@ -47,9 +47,9 @@ HISTORY_REFRESH_SEC = 300  # 5분마다 히스토리 갱신 (일별 데이터라
 
 def fetch_history(period="3mo", interval="1d"):
     """상장일부터 지금까지 일별 시세를 모아 날짜별 괴리율 계산"""
-    adr_close = yf.Ticker(ADR_TICKER).history(period=period, interval=interval)["Close"]
-    krx_close = yf.Ticker(KRX_TICKER).history(period=period, interval=interval)["Close"]
-    fx_close = yf.Ticker(FX_TICKER).history(period=period, interval=interval)["Close"]
+    adr_close = yf.Ticker(ADR_TICKER).history(period=period, interval=interval, timeout=10)["Close"]
+    krx_close = yf.Ticker(KRX_TICKER).history(period=period, interval=interval, timeout=10)["Close"]
+    fx_close = yf.Ticker(FX_TICKER).history(period=period, interval=interval, timeout=10)["Close"]
 
     # 타임존 제거 + 날짜만 남기기 (한국/미국 장 시간대가 달라서 날짜 기준으로 맞춤)
     for s in (adr_close, krx_close, fx_close):
@@ -96,21 +96,29 @@ def history_loop():
         time.sleep(HISTORY_REFRESH_SEC)
 
 
+def get_last_price(ticker, timeout=10):
+    """history()는 timeout을 직접 지정할 수 있어서 fast_info보다 안전함"""
+    df = yf.Ticker(ticker).history(period="5d", interval="1d", timeout=timeout)
+    if df.empty:
+        raise RuntimeError(f"{ticker}: 데이터를 못 받음 (빈 응답)")
+    return float(df["Close"].iloc[-1])
+
+
 def fetch_and_update():
     """yfinance로 3개 티커를 가져와 괴리율을 계산하고 캐시에 저장"""
     try:
         print(f"[fetch] 시도 시작 ({time.strftime('%H:%M:%S')})")
 
         print("[fetch] SKHY 요청 중...")
-        adr = yf.Ticker(ADR_TICKER).fast_info["last_price"]
+        adr = get_last_price(ADR_TICKER)
         print(f"[fetch] SKHY 완료: {adr}")
 
         print("[fetch] 000660.KS 요청 중...")
-        krx = yf.Ticker(KRX_TICKER).fast_info["last_price"]
+        krx = get_last_price(KRX_TICKER)
         print(f"[fetch] 000660.KS 완료: {krx}")
 
         print("[fetch] KRW=X 요청 중...")
-        fx = yf.Ticker(FX_TICKER).fast_info["last_price"]
+        fx = get_last_price(FX_TICKER)
         print(f"[fetch] KRW=X 완료: {fx}")
 
         theo = (krx / ADR_RATIO) / fx
